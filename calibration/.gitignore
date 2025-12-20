@@ -1,0 +1,8 @@
+# Ignore calibration data files (device-specific, should not be committed)
+*.npy
+*_metadata.json
+
+# Keep README for documentation
+!README.md
+!.gitignore
+

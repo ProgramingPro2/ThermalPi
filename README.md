@@ -139,6 +139,26 @@ MAX_QUEUE_SIZE = 2  # Latest-frame policy: keep only 2 frames
 
 You can also adjust offsets and alpha blend ratio at runtime using command-line arguments (see Usage section above).
 
+## Flat Field Calibration (Noise Reduction)
+
+The system includes flat field calibration to eliminate fixed pattern noise from thermal images. This removes grainy patterns and artifacts on uniform temperature surfaces while preserving thermal detail.
+
+### Quick Start
+
+Initial calibration (point camera at a wall):
+
+```bash
+./run_hud.sh --calibrate
+```
+
+Recalibrate during runtime:
+
+```bash
+kill -SIGUSR1 $(pgrep -f thermal_fusion_hud)
+```
+
+**See [docs/FLAT_FIELD_CALIBRATION.md](docs/FLAT_FIELD_CALIBRATION.md) for complete documentation.**
+
 ## Project Structure
 
 ```
@@ -205,6 +225,7 @@ Tested performance on Raspberry Pi 4:
 - Grayscale image processing
 - CLAHE contrast enhancement
 - Canny edge detection overlay
+- **Flat field calibration (FFC)** for thermal noise reduction
 - Multi-threaded capture and rendering (webcam @ 60fps, thermal @ 9Hz target)
 - Graceful shutdown handling
 - Performance monitoring (FPS display)

@@ -6,12 +6,14 @@ Includes CLAHE normalization, Canny edge detection, and alpha-blending fusion.
 import numpy as np
 import cv2
 import config
+from thermal_calibration import apply_correction
 
 
 def normalize_thermal(thermal_frame):
     """
     Apply aggressive Min-Max normalization to thermal frame with percentile-based range.
     Uses percentiles to ignore outliers and maximize contrast.
+    Applies flat field correction first if enabled.
     
     Args:
         thermal_frame: numpy array of uint16 thermal data
@@ -21,6 +23,11 @@ def normalize_thermal(thermal_frame):
     """
     if thermal_frame is None or thermal_frame.size == 0:
         return None
+    
+    # Apply flat field correction first (before normalization)
+    # This removes fixed pattern noise while preserving thermal detail
+    if config.FFC_ENABLED:
+        thermal_frame = apply_correction(thermal_frame)
     
     # Convert to float for processing
     frame_float = thermal_frame.astype(np.float32)
@@ -44,6 +51,36 @@ def normalize_thermal(thermal_frame):
         normalized = np.zeros_like(frame_float)
     
     return normalized
+
+
+def apply_human_detection_threshold(thermal_normalized):
+    """
+    Apply threshold mask to normalized thermal data for human detection.
+    Pixels below the threshold are set to 0.0 (coldest), showing only warm objects.
+    
+    Args:
+        thermal_normalized: Normalized thermal array in range [0, 1] (float32)
+        
+    Returns:
+        Thresholded thermal array in range [0, 1] (float32)
+        Pixels below threshold are set to 0.0
+    """
+    if thermal_normalized is None:
+        return None
+    
+    # Validate threshold value from config
+    threshold = config.HUMAN_DETECTION_THRESHOLD
+    if threshold < 0.0 or threshold > 1.0:
+        # Invalid threshold, return original data
+        return thermal_normalized
+    
+    # Create binary mask: pixels >= threshold are True (keep), others False (set to 0)
+    mask = thermal_normalized >= threshold
+    
+    # Apply mask: keep values above threshold, set others to 0.0
+    thresholded = np.where(mask, thermal_normalized, 0.0)
+    
+    return thresholded.astype(np.float32)
 
 
 def apply_clahe(thermal_normalized):
@@ -358,10 +395,16 @@ def fuse_thermal_hud(thermal_frame, webcam_frame):
         # Clip thermal data to valid 14-bit range to prevent overflow
         thermal_frame = np.clip(thermal_frame, 0, 16383).astype(np.uint16)
         
-        # Process thermal: normalize -> CLAHE -> white-hot
+        # Process thermal: normalize -> threshold (optional) -> CLAHE -> white-hot
         thermal_norm = normalize_thermal(thermal_frame)
         if thermal_norm is None:
             return None
+        
+        # Apply human detection threshold if enabled
+        if config.HUMAN_DETECTION_ENABLED:
+            thermal_norm = apply_human_detection_threshold(thermal_norm)
+            if thermal_norm is None:
+                return None
         
         thermal_clahe = apply_clahe(thermal_norm)
         if thermal_clahe is None:

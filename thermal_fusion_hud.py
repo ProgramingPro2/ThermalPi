@@ -18,6 +18,7 @@ import config
 from seek_thermal import SeekThermal, SeekThermalOpenCV
 from image_processor import fuse_thermal_hud
 from display_controller import DisplayController
+from thermal_calibration import get_calibration_instance, initialize_calibration
 
 
 class ThermalFusionHUD:
@@ -49,6 +50,46 @@ class ThermalFusionHUD:
         self.webcam_times = deque(maxlen=30)
         self.thermal_times = deque(maxlen=30)
         self.display_times = deque(maxlen=30)
+        
+        # Calibration
+        self.calibration_requested = False
+        self.calibration_in_progress = False
+    
+    def perform_calibration(self):
+        """Perform thermal camera calibration"""
+        if self.thermal_camera is None or not self.thermal_camera.is_ready():
+            print("Error: Thermal camera not available for calibration")
+            return False
+        
+        print("\n" + "="*60)
+        print("THERMAL CAMERA CALIBRATION")
+        print("="*60)
+        
+        self.calibration_in_progress = True
+        
+        # Get calibration instance
+        calibration = get_calibration_instance()
+        
+        # Perform calibration
+        success = calibration.perform_calibration(self.thermal_camera, save=True)
+        
+        self.calibration_in_progress = False
+        self.calibration_requested = False
+        
+        if success:
+            print("Calibration successful!")
+        else:
+            print("Calibration failed!")
+        
+        return success
+    
+    def request_calibration(self):
+        """Request calibration (can be called from signal handler)"""
+        if not self.calibration_in_progress:
+            print("\nCalibration requested...")
+            self.calibration_requested = True
+        else:
+            print("\nCalibration already in progress, please wait...")
     
     def initialize_devices(self):
         """Initialize all hardware devices"""
@@ -239,13 +280,24 @@ class ThermalFusionHUD:
             self.display_frame_count = 0
             self.last_stats_time = current_time
     
-    def run(self):
+    def run(self, perform_initial_calibration=False):
         """Main fusion and display loop"""
         print("Starting Thermal Fusion HUD...")
         
         if not self.initialize_devices():
             print("Failed to initialize devices")
             return False
+        
+        # Initialize calibration system
+        if config.FFC_ENABLED:
+            print("\nInitializing flat field calibration...")
+            if initialize_calibration():
+                print("Existing calibration loaded successfully")
+            else:
+                print("No existing calibration found")
+                if perform_initial_calibration and self.thermal_camera:
+                    print("Performing initial calibration...")
+                    self.perform_calibration()
         
         self.running = True
         
@@ -273,6 +325,14 @@ class ThermalFusionHUD:
         
         while self.running and not self.shutdown_event.is_set():
             loop_start = time.time()
+            
+            # Check for calibration request
+            if self.calibration_requested and not self.calibration_in_progress:
+                if self.thermal_camera and self.thermal_camera.is_ready():
+                    self.perform_calibration()
+                else:
+                    print("Cannot calibrate: thermal camera not available")
+                    self.calibration_requested = False
             
             # Get latest frames (non-blocking)
             try:
@@ -386,6 +446,15 @@ def signal_handler(sig, frame):
     sys.exit(0)
 
 
+def calibration_signal_handler(sig, frame):
+    """Handle SIGUSR1 for runtime calibration"""
+    print("\nReceived calibration signal (SIGUSR1)")
+    if 'hud' in globals():
+        hud.request_calibration()
+    else:
+        print("HUD not initialized yet")
+
+
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(description='Thermal Fusion HUD for Raspberry Pi 4')
@@ -395,6 +464,8 @@ def main():
                         help='Thermal layer Y offset for parallax correction')
     parser.add_argument('--alpha', type=float, default=config.ALPHA_BLEND_RATIO,
                         help='Alpha blend ratio (0.0=all visible, 1.0=all thermal)')
+    parser.add_argument('--calibrate', action='store_true',
+                        help='Perform flat field calibration on startup (point camera at uniform surface)')
     
     args = parser.parse_args()
     
@@ -406,13 +477,14 @@ def main():
     # Register signal handlers
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGUSR1, calibration_signal_handler)
     
     # Create and run HUD
     global hud
     hud = ThermalFusionHUD()
     
     try:
-        hud.run()
+        hud.run(perform_initial_calibration=args.calibrate)
     except KeyboardInterrupt:
         pass
     finally:
