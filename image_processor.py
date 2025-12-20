@@ -79,13 +79,14 @@ def apply_clahe(thermal_normalized):
 
 def apply_white_hot_colormap(thermal_enhanced):
     """
-    Simple White-Hot colormap with aggressive contrast stretch.
+    Apply OpenCV colormap to thermal data with aggressive contrast stretch.
+    Returns color RGB image for color displays.
     
     Args:
         thermal_enhanced: Enhanced thermal array in range [0, 1]
         
     Returns:
-        Grayscale image in range [0, 1] (bright = hot) with maximum contrast
+        RGB color image in range [0, 1] with colormap applied (shape: H, W, 3)
     """
     if thermal_enhanced is None:
         return None
@@ -107,7 +108,21 @@ def apply_white_hot_colormap(thermal_enhanced):
     else:
         thermal_stretched = thermal_enhanced
     
-    return thermal_stretched
+    # Convert to uint8 for colormap application
+    thermal_uint8 = (thermal_stretched * 255).astype(np.uint8)
+    
+    # Get OpenCV colormap constant from config string
+    colormap_name = config.THERMAL_COLORMAP
+    colormap_const = getattr(cv2, colormap_name, cv2.COLORMAP_INFERNO)  # Default to INFERNO if not found
+    
+    # Apply colormap (returns BGR image)
+    thermal_colored = cv2.applyColorMap(thermal_uint8, colormap_const)
+    
+    # Convert BGR to RGB (display expects RGB)
+    thermal_rgb = cv2.cvtColor(thermal_colored, cv2.COLOR_BGR2RGB)
+    
+    # Normalize to [0, 1] range (keep 3 channels for color)
+    return (thermal_rgb.astype(np.float32) / 255.0)
 
 
 def process_webcam_frame(webcam_frame):
@@ -174,7 +189,7 @@ def process_webcam_frame(webcam_frame):
 
 def extract_canny_edges(webcam_frame, thermal_fov_region=False):
     """
-    Extract Canny edges from webcam frame.
+    Extract Canny edges from webcam frame with zoom applied.
     
     Args:
         webcam_frame: Raw webcam frame (BGR or grayscale)
@@ -195,6 +210,26 @@ def extract_canny_edges(webcam_frame, thermal_fov_region=False):
     # Convert to grayscale if color image
     if len(frame_uint8.shape) == 3:
         frame_uint8 = cv2.cvtColor(frame_uint8, cv2.COLOR_BGR2GRAY)
+    
+    # Apply zoom if configured (same as process_webcam_frame)
+    if config.WEBCAM_ZOOM != 1.0:
+        h, w = frame_uint8.shape
+        # Calculate center and crop region
+        center_x = w // 2
+        center_y = h // 2
+        
+        # Calculate zoomed crop size
+        crop_w = int(w / config.WEBCAM_ZOOM)
+        crop_h = int(h / config.WEBCAM_ZOOM)
+        
+        # Calculate crop boundaries (centered)
+        start_x = max(0, center_x - crop_w // 2)
+        start_y = max(0, center_y - crop_h // 2)
+        end_x = min(w, start_x + crop_w)
+        end_y = min(h, start_y + crop_h)
+        
+        # Crop (zoom in)
+        frame_uint8 = frame_uint8[start_y:end_y, start_x:end_x]
     
     # Resize to display resolution for full-screen edges
     if frame_uint8.shape != (config.DISPLAY_HEIGHT, config.DISPLAY_WIDTH):
@@ -259,14 +294,14 @@ def alpha_blend(thermal_frame, visible_frame, alpha=0.6):
 
 def overlay_edges(blended_frame, edges):
     """
-    Overlay Canny edges on top of blended frame.
+    Overlay Canny edges on top of blended frame. Supports both grayscale and color frames.
     
     Args:
-        blended_frame: Blended thermal/visible frame in range [0, 1]
-        edges: Binary edge image (0 or 255)
+        blended_frame: Blended thermal/visible frame in range [0, 1], shape (H, W) or (H, W, 3)
+        edges: Binary edge image (0 or 255), shape (H, W)
         
     Returns:
-        Frame with edges overlaid
+        Frame with edges overlaid (same shape as input)
     """
     if blended_frame is None:
         return None
@@ -282,7 +317,7 @@ def overlay_edges(blended_frame, edges):
                 interpolation=cv2.INTER_NEAREST
             )
         
-        # Convert edges to float and overlay (white edges)
+        # Convert edges to float and overlay (bright edges)
         if edges.dtype != np.uint8:
             edges_uint8 = (edges * 255).astype(np.uint8)
         else:
@@ -290,8 +325,13 @@ def overlay_edges(blended_frame, edges):
         
         edges_float = (edges_uint8 > 127).astype(np.float32)
         
-        # Overlay: edges make pixels brighter (more visible on dark backgrounds)
-        result = np.maximum(result, edges_float * 0.9)  # Edges at 90% brightness
+        # If frame is color (3D), expand edges to 3 channels
+        if len(result.shape) == 3:
+            edges_float = np.stack([edges_float] * 3, axis=2)
+        
+        # Overlay: edges make pixels brighter (white edges)
+        # Use maximum to overlay bright edges
+        result = np.maximum(result, edges_float * 1.0)  # Edges at full brightness for visibility
     
     return result
 
@@ -336,20 +376,27 @@ def fuse_thermal_hud(thermal_frame, webcam_frame):
             return None
         
         # Validate white-hot output
+        if thermal_white_hot is None:
+            return None
         if np.any(np.isnan(thermal_white_hot)) or np.any(np.isinf(thermal_white_hot)):
             return None
+        
+        # Debug: print thermal shape
+        # print(f"Thermal shape after colormap: {thermal_white_hot.shape}")
         
         # Process webcam: grayscale + resize/crop
         webcam_processed = process_webcam_frame(webcam_frame)
         if webcam_processed is None:
             return None
         
-        # Validate webcam processed dimensions
-        if len(webcam_processed.shape) != 2:
-            return None
+        # Validate webcam processed dimensions (accept both grayscale and color)
         # Just check that we have valid dimensions (be flexible)
         if webcam_processed.shape[0] < 100 or webcam_processed.shape[1] < 100:
             return None
+        
+        # Convert webcam to RGB for color display if it's grayscale
+        if len(webcam_processed.shape) == 2:
+            webcam_processed = np.stack([webcam_processed] * 3, axis=2)
         
         # Extract edges from webcam (full frame, not just thermal region)
         edges = None
@@ -394,10 +441,26 @@ def fuse_thermal_hud(thermal_frame, webcam_frame):
             return None
         
         # Resize thermal to match visible region if dimensions differ
-        if thermal_white_hot.shape[0] != actual_h or thermal_white_hot.shape[1] != actual_w:
-            thermal_resized = cv2.resize(thermal_white_hot, (actual_w, actual_h), interpolation=cv2.INTER_LINEAR)
+        # Handle both grayscale (2D) and color (3D) thermal images
+        if len(thermal_white_hot.shape) == 2:
+            # Grayscale thermal - resize if needed
+            if thermal_white_hot.shape[0] != actual_h or thermal_white_hot.shape[1] != actual_w:
+                thermal_resized = cv2.resize(thermal_white_hot, (actual_w, actual_h), interpolation=cv2.INTER_LINEAR)
+            else:
+                thermal_resized = thermal_white_hot
+            # Convert grayscale to 3-channel RGB for color display
+            thermal_resized = np.stack([thermal_resized] * 3, axis=2)
         else:
-            thermal_resized = thermal_white_hot
+            # Color thermal (3D array - RGB)
+            if thermal_white_hot.shape[0] != actual_h or thermal_white_hot.shape[1] != actual_w:
+                thermal_resized = cv2.resize(thermal_white_hot, (actual_w, actual_h), interpolation=cv2.INTER_LINEAR)
+            else:
+                thermal_resized = thermal_white_hot
+        
+        # Ensure visible region is also 3-channel for blending
+        if len(visible_region.shape) == 2:
+            # Convert grayscale visible to RGB
+            visible_region = np.stack([visible_region] * 3, axis=2)
         
         # Alpha-blend thermal and visible in center region
         # Higher alpha = more thermal visible
@@ -440,7 +503,8 @@ def fuse_thermal_hud(thermal_frame, webcam_frame):
         # Final validation - ensure composite is valid
         if composite is None or composite.size == 0:
             return None
-        if len(composite.shape) != 2:
+        # Accept both grayscale (2D) and color (3D) composites
+        if len(composite.shape) not in [2, 3]:
             return None
         
         return composite

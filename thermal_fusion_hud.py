@@ -299,16 +299,27 @@ class ThermalFusionHUD:
                         else:
                             # Fusion failed, fall back to webcam-only for this frame
                             from image_processor import process_webcam_frame
+                            import numpy as np
                             processed = process_webcam_frame(last_webcam_frame)
                             if processed is not None:
+                                # Convert to RGB if grayscale
+                                if len(processed.shape) == 2:
+                                    processed = np.stack([processed] * 3, axis=2)
                                 self.display.update_frame(processed)
                                 self.display_frame_count += 1
                     except Exception as e:
+                        print(f"Fusion error: {e}")
+                        import traceback
+                        traceback.print_exc()
                         # On error, fall back to webcam-only mode for this frame
                         try:
                             from image_processor import process_webcam_frame
+                            import numpy as np
                             processed = process_webcam_frame(last_webcam_frame)
                             if processed is not None:
+                                # Convert to RGB if grayscale
+                                if len(processed.shape) == 2:
+                                    processed = np.stack([processed] * 3, axis=2)
                                 self.display.update_frame(processed)
                                 self.display_frame_count += 1
                         except:

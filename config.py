@@ -21,7 +21,8 @@ CLAHE_CLIP_LIMIT = 8.0  # Very strong contrast enhancement
 CLAHE_TILE_GRID_SIZE = (8, 8)
 CANNY_THRESHOLD_LOW = 50
 CANNY_THRESHOLD_HIGH = 150
-ALPHA_BLEND_RATIO = 0.5  # 0.0 = all visible, 1.0 = all thermal
+ALPHA_BLEND_RATIO = 0.7  # 0.0 = all visible, 1.0 = all thermal
+THERMAL_COLORMAP = "COLORMAP_INFERNO"  # OpenCV colormap: INFERNO, JET, HOT, VIRIDIS, PLASMA, etc.
 
 # Thermal sensor settings
 THERMAL_WIDTH = 207  # Actual Seek Thermal Compact/CompactXR resolution
@@ -33,10 +34,10 @@ WEBCAM_WIDTH = 640
 WEBCAM_HEIGHT = 480
 WEBCAM_FPS = 30  # Reduced from 60 to save power and CPU
 WEBCAM_DEVICE_ID = 0  # Usually /dev/video0
-WEBCAM_ZOOM = 1.0  # Zoom factor (1.0 = no zoom, >1.0 = zoom in, <1.0 = zoom out)
+WEBCAM_ZOOM = 2.0  # Zoom factor (1.0 = no zoom, >1.0 = zoom in, <1.0 = zoom out)
 
 # Threading settings
 WEBCAM_THREAD_PRIORITY = 1
 THERMAL_THREAD_PRIORITY = 1
-MAX_QUEUE_SIZE = 1  # Reduced to save memory/power - only keep latest frame
+MAX_QUEUE_SIZE = 5  # Reduced to save memory/power - only keep latest frame
 
