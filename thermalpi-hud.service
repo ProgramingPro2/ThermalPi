@@ -1,0 +1,20 @@
+[Unit]
+Description=Thermal Fusion HUD Service
+After=network.target
+
+[Service]
+Type=simple
+User=jpearce
+Group=jpearce
+WorkingDirectory=/home/jpearce/ThermalPi
+Environment="LD_LIBRARY_PATH=/home/jpearce/ThermalPi/libraries:/usr/local/lib"
+Environment="PATH=/home/jpearce/ThermalPi/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/home/jpearce/ThermalPi/.venv/bin/python3 /home/jpearce/ThermalPi/thermal_fusion_hud.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+
