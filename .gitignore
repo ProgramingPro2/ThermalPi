@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build artifacts
+build/*.so
+build/*.o
+*.egg-info/
+dist/
+
+# Test outputs
+tests/__pycache__/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+*.patch
+libraries/libseekwrapper.so
+
