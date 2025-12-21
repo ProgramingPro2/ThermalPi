@@ -21,12 +21,14 @@ CLAHE_CLIP_LIMIT = 8.0  # Very strong contrast enhancement
 CLAHE_TILE_GRID_SIZE = (8, 8)
 CANNY_THRESHOLD_LOW = 50
 CANNY_THRESHOLD_HIGH = 150
-ALPHA_BLEND_RATIO = 0.7  # 0.0 = all visible, 1.0 = all thermal
+ALPHA_BLEND_RATIO = 0.9  # 0.0 = all visible, 1.0 = all thermal
 THERMAL_COLORMAP = "COLORMAP_INFERNO"  # OpenCV colormap: INFERNO, JET, HOT, VIRIDIS, PLASMA, etc.
 
-# Human detection threshold (normalized, relative to frame temperature range)
-HUMAN_DETECTION_ENABLED = True  # Enable to filter thermal data to show only warm objects (humans)
-HUMAN_DETECTION_THRESHOLD = 0.75  # Normalized threshold [0.0, 1.0]: 0.75 = top 25% of temperature range
+# Background removal threshold (normalized, relative to frame temperature range)
+# This removes cold/uninteresting background, keeping only warm objects (humans, hot objects)
+# Always enabled for better thermal visibility
+HUMAN_DETECTION_ENABLED = True  # Kept for compatibility, always enabled now
+HUMAN_DETECTION_THRESHOLD = 0.45  # Normalized threshold [0.0, 1.0]: 0.45 = keep top 55% of temperature range
 
 # Thermal sensor settings
 THERMAL_WIDTH = 207  # Actual Seek Thermal Compact/CompactXR resolution

@@ -116,7 +116,7 @@ def apply_clahe(thermal_normalized):
 
 def apply_white_hot_colormap(thermal_enhanced):
     """
-    Apply OpenCV colormap to thermal data with aggressive contrast stretch.
+    Apply OpenCV colormap to thermal data with aggressive contrast stretch and brightness boost.
     Returns color RGB image for color displays.
     
     Args:
@@ -128,10 +128,10 @@ def apply_white_hot_colormap(thermal_enhanced):
     if thermal_enhanced is None:
         return None
     
-    # Aggressive contrast stretch using percentiles
-    # Ignore bottom 5% and top 5% to maximize contrast in the important range
-    min_percentile = np.percentile(thermal_enhanced, 5)
-    max_percentile = np.percentile(thermal_enhanced, 95)
+    # Very aggressive contrast stretch using percentiles (1st/99th for maximum contrast)
+    # Ignore outliers to maximize contrast in the important range
+    min_percentile = np.percentile(thermal_enhanced, 1)
+    max_percentile = np.percentile(thermal_enhanced, 99)
     
     # If range is too small, use full min/max
     if max_percentile - min_percentile < 0.01:
@@ -139,14 +139,24 @@ def apply_white_hot_colormap(thermal_enhanced):
         max_percentile = np.max(thermal_enhanced)
     
     if max_percentile > min_percentile:
-        # Stretch the middle 90% to full range [0, 1]
+        # Stretch the middle 98% to full range [0, 1]
         thermal_stretched = (thermal_enhanced - min_percentile) / (max_percentile - min_percentile)
         thermal_stretched = np.clip(thermal_stretched, 0.0, 1.0)
     else:
         thermal_stretched = thermal_enhanced
     
+    # Apply gamma correction to brighten the image (gamma < 1.0 makes image brighter)
+    # Using gamma = 0.7 for brightness boost
+    gamma = 0.7
+    thermal_brightened = np.power(thermal_stretched, gamma)
+    
+    # Additional brightness boost: shift curve upward
+    # This makes mid-tones brighter while preserving highlights
+    thermal_brightened = thermal_brightened * 0.85 + 0.15  # Add base brightness
+    thermal_brightened = np.clip(thermal_brightened, 0.0, 1.0)
+    
     # Convert to uint8 for colormap application
-    thermal_uint8 = (thermal_stretched * 255).astype(np.uint8)
+    thermal_uint8 = (thermal_brightened * 255).astype(np.uint8)
     
     # Get OpenCV colormap constant from config string
     colormap_name = config.THERMAL_COLORMAP
@@ -158,32 +168,42 @@ def apply_white_hot_colormap(thermal_enhanced):
     # Convert BGR to RGB (display expects RGB)
     thermal_rgb = cv2.cvtColor(thermal_colored, cv2.COLOR_BGR2RGB)
     
+    # Additional brightness boost on the final color image
+    # Multiply RGB channels to increase overall brightness
+    thermal_rgb = thermal_rgb.astype(np.float32) * 1.2  # 20% brightness boost
+    thermal_rgb = np.clip(thermal_rgb, 0, 255)
+    
     # Normalize to [0, 1] range (keep 3 channels for color)
-    return (thermal_rgb.astype(np.float32) / 255.0)
+    return (thermal_rgb / 255.0).astype(np.float32)
 
 
 def process_webcam_frame(webcam_frame):
     """
-    Process webcam frame: convert to grayscale, apply zoom, and resize/crop to display size.
+    Process webcam frame: keep color, apply zoom, and resize/crop to display size.
     
     Args:
         webcam_frame: BGR frame from OpenCV (height, width, 3)
         
     Returns:
-        Grayscale frame resized/cropped to (DISPLAY_HEIGHT, DISPLAY_WIDTH)
+        RGB color frame resized/cropped to (DISPLAY_HEIGHT, DISPLAY_WIDTH, 3)
     """
     if webcam_frame is None:
         return None
     
-    # Convert to grayscale
+    # Convert BGR to RGB for color display
     if len(webcam_frame.shape) == 3:
-        gray = cv2.cvtColor(webcam_frame, cv2.COLOR_BGR2GRAY)
+        if webcam_frame.shape[2] == 3:
+            # BGR to RGB
+            frame_rgb = cv2.cvtColor(webcam_frame, cv2.COLOR_BGR2RGB)
+        else:
+            frame_rgb = webcam_frame
     else:
-        gray = webcam_frame
+        # Grayscale input - convert to RGB
+        frame_rgb = cv2.cvtColor(webcam_frame, cv2.COLOR_GRAY2RGB)
     
     # Apply zoom if configured
     if config.WEBCAM_ZOOM != 1.0:
-        h, w = gray.shape
+        h, w = frame_rgb.shape[:2]
         # Calculate center and crop region
         center_x = w // 2
         center_y = h // 2
@@ -199,10 +219,10 @@ def process_webcam_frame(webcam_frame):
         end_y = min(h, start_y + crop_h)
         
         # Crop (zoom in)
-        gray = gray[start_y:end_y, start_x:end_x]
+        frame_rgb = frame_rgb[start_y:end_y, start_x:end_x]
     
     # Calculate scaling to fill display while maintaining aspect ratio
-    h, w = gray.shape
+    h, w = frame_rgb.shape[:2]
     display_w = config.DISPLAY_WIDTH
     display_h = config.DISPLAY_HEIGHT
     
@@ -213,14 +233,14 @@ def process_webcam_frame(webcam_frame):
     # Resize
     new_w = int(w * scale)
     new_h = int(h * scale)
-    resized = cv2.resize(gray, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    resized = cv2.resize(frame_rgb, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
     
     # Center crop to display size
     start_x = (new_w - display_w) // 2
     start_y = (new_h - display_h) // 2
     cropped = resized[start_y:start_y + display_h, start_x:start_x + display_w]
     
-    # Normalize to [0, 1]
+    # Normalize to [0, 1] range (keep RGB color)
     return (cropped.astype(np.float32) / 255.0)
 
 
@@ -395,16 +415,16 @@ def fuse_thermal_hud(thermal_frame, webcam_frame):
         # Clip thermal data to valid 14-bit range to prevent overflow
         thermal_frame = np.clip(thermal_frame, 0, 16383).astype(np.uint16)
         
-        # Process thermal: normalize -> threshold (optional) -> CLAHE -> white-hot
+        # Process thermal: normalize -> background removal -> CLAHE -> white-hot
         thermal_norm = normalize_thermal(thermal_frame)
         if thermal_norm is None:
             return None
         
-        # Apply human detection threshold if enabled
-        if config.HUMAN_DETECTION_ENABLED:
-            thermal_norm = apply_human_detection_threshold(thermal_norm)
-            if thermal_norm is None:
-                return None
+        # Apply background removal threshold (always enabled for better thermal visibility)
+        # This removes cold/uninteresting background and keeps only warm objects
+        thermal_norm = apply_human_detection_threshold(thermal_norm)
+        if thermal_norm is None:
+            return None
         
         thermal_clahe = apply_clahe(thermal_norm)
         if thermal_clahe is None:
@@ -437,7 +457,8 @@ def fuse_thermal_hud(thermal_frame, webcam_frame):
         if webcam_processed.shape[0] < 100 or webcam_processed.shape[1] < 100:
             return None
         
-        # Convert webcam to RGB for color display if it's grayscale
+        # Webcam should already be RGB color from process_webcam_frame
+        # But handle grayscale case just in case
         if len(webcam_processed.shape) == 2:
             webcam_processed = np.stack([webcam_processed] * 3, axis=2)
         
