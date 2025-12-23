@@ -114,19 +114,35 @@ def apply_clahe(thermal_normalized):
     return enhanced_float
 
 
-def apply_white_hot_colormap(thermal_enhanced):
+def apply_white_hot_colormap(thermal_enhanced, alpha_mask=None):
     """
     Apply OpenCV colormap to thermal data with aggressive contrast stretch and brightness boost.
-    Returns color RGB image for color displays.
+    Returns RGBA image with transparency for background removal.
     
     Args:
         thermal_enhanced: Enhanced thermal array in range [0, 1]
+        alpha_mask: Optional alpha mask (same shape as thermal_enhanced) for transparency.
+                    If None, creates alpha based on thermal intensity threshold.
         
     Returns:
-        RGB color image in range [0, 1] with colormap applied (shape: H, W, 3)
+        RGBA color image in range [0, 1] with colormap applied (shape: H, W, 4)
+        Alpha channel: 0.0 = transparent (cold background), 1.0 = opaque (warm objects)
     """
     if thermal_enhanced is None:
         return None
+    
+    # Create alpha mask from thermal data before stretching (to preserve original intensity)
+    # Use threshold to determine what should be visible
+    if alpha_mask is None:
+        threshold = config.HUMAN_DETECTION_THRESHOLD
+        # Create smooth alpha transition instead of hard threshold
+        # Values below threshold fade to transparent
+        alpha_base = np.clip((thermal_enhanced - threshold) / (1.0 - threshold + 1e-6), 0.0, 1.0)
+        # Smooth the transition with a power curve for better blending
+        alpha_mask = np.power(alpha_base, 0.5)  # Square root for smoother fade
+    else:
+        # Use provided mask, ensure it's in [0, 1] range
+        alpha_mask = np.clip(alpha_mask, 0.0, 1.0)
     
     # Very aggressive contrast stretch using percentiles (1st/99th for maximum contrast)
     # Ignore outliers to maximize contrast in the important range
@@ -173,8 +189,18 @@ def apply_white_hot_colormap(thermal_enhanced):
     thermal_rgb = thermal_rgb.astype(np.float32) * 1.2  # 20% brightness boost
     thermal_rgb = np.clip(thermal_rgb, 0, 255)
     
-    # Normalize to [0, 1] range (keep 3 channels for color)
-    return (thermal_rgb / 255.0).astype(np.float32)
+    # Normalize to [0, 1] range
+    thermal_rgb = (thermal_rgb / 255.0).astype(np.float32)
+    
+    # Add alpha channel for transparency (cold areas = transparent)
+    # Ensure alpha_mask matches thermal_rgb shape
+    if alpha_mask.shape != thermal_rgb.shape[:2]:
+        alpha_mask = cv2.resize(alpha_mask, (thermal_rgb.shape[1], thermal_rgb.shape[0]), interpolation=cv2.INTER_LINEAR)
+    
+    # Combine RGB with alpha channel
+    thermal_rgba = np.dstack([thermal_rgb, alpha_mask.astype(np.float32)])
+    
+    return thermal_rgba
 
 
 def process_webcam_frame(webcam_frame):
@@ -306,38 +332,69 @@ def extract_canny_edges(webcam_frame, thermal_fov_region=False):
     return edges
 
 
-def alpha_blend(thermal_frame, visible_frame, alpha=0.6):
+def alpha_composite(thermal_rgba, visible_frame, blend_ratio=0.6):
     """
-    Alpha-blend thermal and visible frames.
+    Alpha-composite thermal RGBA image over visible frame with transparency.
+    Handles both RGBA thermal (with alpha channel) and RGB visible frames.
     
     Args:
-        thermal_frame: Thermal frame in range [0, 1], shape (H, W)
-        visible_frame: Visible frame in range [0, 1], shape (H, W)
-        alpha: Blend ratio (0.0 = all visible, 1.0 = all thermal)
+        thermal_rgba: Thermal frame in range [0, 1], shape (H, W, 4) with alpha channel
+                     or shape (H, W, 3) without alpha
+        visible_frame: Visible frame in range [0, 1], shape (H, W, 3) RGB
+        blend_ratio: Additional blend ratio (0.0 = all visible, 1.0 = all thermal)
+                    Applied on top of the alpha channel
         
     Returns:
-        Blended frame in range [0, 1]
+        Blended RGB frame in range [0, 1], shape (H, W, 3)
     """
-    if thermal_frame is None or visible_frame is None:
+    if thermal_rgba is None or visible_frame is None:
         return None
     
-    # Ensure same shape
-    if thermal_frame.shape != visible_frame.shape:
+    # Extract alpha channel if thermal has one
+    if len(thermal_rgba.shape) == 3 and thermal_rgba.shape[2] == 4:
+        thermal_rgb = thermal_rgba[:, :, :3]
+        thermal_alpha = thermal_rgba[:, :, 3:4]  # Keep as (H, W, 1) for broadcasting
+    else:
+        # No alpha channel, use full opacity
+        thermal_rgb = thermal_rgba
+        thermal_alpha = np.ones((thermal_rgb.shape[0], thermal_rgb.shape[1], 1), dtype=np.float32)
+    
+    # Ensure same spatial dimensions
+    if thermal_rgb.shape[:2] != visible_frame.shape[:2]:
         # Resize thermal to match visible
-        thermal_frame = cv2.resize(
-            thermal_frame,
+        thermal_rgb = cv2.resize(
+            thermal_rgb,
             (visible_frame.shape[1], visible_frame.shape[0]),
             interpolation=cv2.INTER_LINEAR
         )
+        thermal_alpha = cv2.resize(
+            thermal_alpha[:, :, 0],
+            (visible_frame.shape[1], visible_frame.shape[0]),
+            interpolation=cv2.INTER_LINEAR
+        )
+        thermal_alpha = thermal_alpha[:, :, np.newaxis]  # Restore (H, W, 1) shape
+    
+    # Ensure visible_frame is RGB (3 channels)
+    if len(visible_frame.shape) == 2:
+        visible_frame = np.stack([visible_frame] * 3, axis=2)
+    elif visible_frame.shape[2] == 1:
+        visible_frame = np.repeat(visible_frame, 3, axis=2)
     
     # Validate inputs don't contain NaN/Inf
-    if np.any(np.isnan(thermal_frame)) or np.any(np.isinf(thermal_frame)):
+    if np.any(np.isnan(thermal_rgb)) or np.any(np.isinf(thermal_rgb)):
         return None
     if np.any(np.isnan(visible_frame)) or np.any(np.isinf(visible_frame)):
         return None
+    if np.any(np.isnan(thermal_alpha)) or np.any(np.isinf(thermal_alpha)):
+        return None
     
-    # Alpha blend: result = alpha * thermal + (1 - alpha) * visible
-    blended = alpha * thermal_frame + (1.0 - alpha) * visible_frame
+    # Combine alpha channel with blend ratio
+    # Final alpha = thermal_alpha * blend_ratio (makes thermal more/less prominent)
+    final_alpha = thermal_alpha * blend_ratio
+    
+    # Alpha composite: result = alpha * thermal + (1 - alpha) * visible
+    # This formula properly handles transparency
+    blended = final_alpha * thermal_rgb + (1.0 - final_alpha) * visible_frame
     
     # Clip and validate output
     blended = np.clip(blended, 0.0, 1.0)
@@ -347,6 +404,55 @@ def alpha_blend(thermal_frame, visible_frame, alpha=0.6):
         return None
     
     return blended
+
+
+def alpha_blend(thermal_frame, visible_frame, alpha=0.6):
+    """
+    Alpha-blend thermal and visible frames (backward compatibility).
+    If thermal has alpha channel, uses alpha_composite. Otherwise, simple blending.
+    
+    Args:
+        thermal_frame: Thermal frame in range [0, 1], shape (H, W, 3) or (H, W, 4)
+        visible_frame: Visible frame in range [0, 1], shape (H, W, 3)
+        alpha: Blend ratio (0.0 = all visible, 1.0 = all thermal)
+        
+    Returns:
+        Blended frame in range [0, 1]
+    """
+    # Check if thermal has alpha channel
+    if len(thermal_frame.shape) == 3 and thermal_frame.shape[2] == 4:
+        return alpha_composite(thermal_frame, visible_frame, blend_ratio=alpha)
+    else:
+        # Simple alpha blend (old behavior)
+        if thermal_frame is None or visible_frame is None:
+            return None
+        
+        # Ensure same shape
+        if thermal_frame.shape != visible_frame.shape:
+            # Resize thermal to match visible
+            thermal_frame = cv2.resize(
+                thermal_frame,
+                (visible_frame.shape[1], visible_frame.shape[0]),
+                interpolation=cv2.INTER_LINEAR
+            )
+        
+        # Validate inputs don't contain NaN/Inf
+        if np.any(np.isnan(thermal_frame)) or np.any(np.isinf(thermal_frame)):
+            return None
+        if np.any(np.isnan(visible_frame)) or np.any(np.isinf(visible_frame)):
+            return None
+        
+        # Alpha blend: result = alpha * thermal + (1 - alpha) * visible
+        blended = alpha * thermal_frame + (1.0 - alpha) * visible_frame
+        
+        # Clip and validate output
+        blended = np.clip(blended, 0.0, 1.0)
+        
+        # Final check for NaN/Inf
+        if np.any(np.isnan(blended)) or np.any(np.isinf(blended)):
+            return None
+        
+        return blended
 
 
 def overlay_edges(blended_frame, edges):
@@ -415,32 +521,38 @@ def fuse_thermal_hud(thermal_frame, webcam_frame):
         # Clip thermal data to valid 14-bit range to prevent overflow
         thermal_frame = np.clip(thermal_frame, 0, 16383).astype(np.uint16)
         
-        # Process thermal: normalize -> background removal -> CLAHE -> white-hot
+        # Process thermal: normalize -> background removal -> CLAHE -> white-hot with transparency
         thermal_norm = normalize_thermal(thermal_frame)
         if thermal_norm is None:
             return None
         
-        # Apply background removal threshold (always enabled for better thermal visibility)
-        # This removes cold/uninteresting background and keeps only warm objects
-        thermal_norm = apply_human_detection_threshold(thermal_norm)
-        if thermal_norm is None:
+        # Create alpha mask BEFORE thresholding (preserve original intensity for smooth transparency)
+        threshold = config.HUMAN_DETECTION_THRESHOLD
+        alpha_mask = np.clip((thermal_norm - threshold) / (1.0 - threshold + 1e-6), 0.0, 1.0)
+        alpha_mask = np.power(alpha_mask, 0.5)  # Smooth transition
+        
+        # Apply background removal threshold for CLAHE processing (this affects the data, not just transparency)
+        thermal_thresholded = apply_human_detection_threshold(thermal_norm)
+        if thermal_thresholded is None:
             return None
         
-        thermal_clahe = apply_clahe(thermal_norm)
+        thermal_clahe = apply_clahe(thermal_thresholded)
         if thermal_clahe is None:
             return None
         
         # Validate CLAHE output (check for NaN/Inf)
         if np.any(np.isnan(thermal_clahe)) or np.any(np.isinf(thermal_clahe)):
             return None
+        
+        # Resize alpha mask to match CLAHE output if needed
+        if alpha_mask.shape != thermal_clahe.shape:
+            alpha_mask = cv2.resize(alpha_mask, (thermal_clahe.shape[1], thermal_clahe.shape[0]), interpolation=cv2.INTER_LINEAR)
             
-        thermal_white_hot = apply_white_hot_colormap(thermal_clahe)
+        thermal_white_hot = apply_white_hot_colormap(thermal_clahe, alpha_mask=alpha_mask)
         if thermal_white_hot is None:
             return None
         
         # Validate white-hot output
-        if thermal_white_hot is None:
-            return None
         if np.any(np.isnan(thermal_white_hot)) or np.any(np.isinf(thermal_white_hot)):
             return None
         
@@ -505,29 +617,43 @@ def fuse_thermal_hud(thermal_frame, webcam_frame):
             return None
         
         # Resize thermal to match visible region if dimensions differ
-        # Handle both grayscale (2D) and color (3D) thermal images
+        # Thermal is now RGBA (4 channels) with transparency
         if len(thermal_white_hot.shape) == 2:
-            # Grayscale thermal - resize if needed
+            # Grayscale thermal - shouldn't happen, but handle it
             if thermal_white_hot.shape[0] != actual_h or thermal_white_hot.shape[1] != actual_w:
                 thermal_resized = cv2.resize(thermal_white_hot, (actual_w, actual_h), interpolation=cv2.INTER_LINEAR)
             else:
                 thermal_resized = thermal_white_hot
-            # Convert grayscale to 3-channel RGB for color display
+            # Convert grayscale to 3-channel RGB (no alpha for backward compatibility)
             thermal_resized = np.stack([thermal_resized] * 3, axis=2)
-        else:
-            # Color thermal (3D array - RGB)
-            if thermal_white_hot.shape[0] != actual_h or thermal_white_hot.shape[1] != actual_w:
-                thermal_resized = cv2.resize(thermal_white_hot, (actual_w, actual_h), interpolation=cv2.INTER_LINEAR)
+        elif len(thermal_white_hot.shape) == 3:
+            if thermal_white_hot.shape[2] == 4:
+                # RGBA image - resize preserving alpha channel
+                if thermal_white_hot.shape[0] != actual_h or thermal_white_hot.shape[1] != actual_w:
+                    # Resize RGB and alpha separately, then combine
+                    thermal_rgb = thermal_white_hot[:, :, :3]
+                    thermal_alpha = thermal_white_hot[:, :, 3]
+                    thermal_rgb_resized = cv2.resize(thermal_rgb, (actual_w, actual_h), interpolation=cv2.INTER_LINEAR)
+                    thermal_alpha_resized = cv2.resize(thermal_alpha, (actual_w, actual_h), interpolation=cv2.INTER_LINEAR)
+                    thermal_resized = np.dstack([thermal_rgb_resized, thermal_alpha_resized])
+                else:
+                    thermal_resized = thermal_white_hot
             else:
-                thermal_resized = thermal_white_hot
+                # RGB image (3 channels) - no alpha, resize normally
+                if thermal_white_hot.shape[0] != actual_h or thermal_white_hot.shape[1] != actual_w:
+                    thermal_resized = cv2.resize(thermal_white_hot, (actual_w, actual_h), interpolation=cv2.INTER_LINEAR)
+                else:
+                    thermal_resized = thermal_white_hot
+        else:
+            return None
         
         # Ensure visible region is also 3-channel for blending
         if len(visible_region.shape) == 2:
             # Convert grayscale visible to RGB
             visible_region = np.stack([visible_region] * 3, axis=2)
         
-        # Alpha-blend thermal and visible in center region
-        # Higher alpha = more thermal visible
+        # Alpha-composite thermal (with transparency) over visible in center region
+        # Uses alpha channel from thermal for transparency, plus blend ratio for intensity
         blended_region = alpha_blend(
             thermal_resized,
             visible_region,
