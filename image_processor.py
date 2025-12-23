@@ -587,63 +587,99 @@ def fuse_thermal_hud(thermal_frame, webcam_frame):
         thermal_h = config.THERMAL_HEIGHT
         thermal_w = config.THERMAL_WIDTH
         
-        # Apply offsets for parallax correction
+        # Apply offsets for parallax correction (can be negative)
         offset_x = config.THERMAL_OFFSET_X
         offset_y = config.THERMAL_OFFSET_Y
         
-        start_y = center_y - thermal_h // 2 + offset_y
-        start_x = center_x - thermal_w // 2 + offset_x
+        # Calculate desired thermal position (may be negative or extend beyond display)
+        desired_start_y = center_y - thermal_h // 2 + offset_y
+        desired_start_x = center_x - thermal_w // 2 + offset_x
         
-        # Ensure bounds are within display
+        # Get display dimensions
         actual_display_h = webcam_processed.shape[0]
         actual_display_w = webcam_processed.shape[1]
         
-        start_y = max(0, min(start_y, actual_display_h - thermal_h))
-        start_x = max(0, min(start_x, actual_display_w - thermal_w))
-        end_y = min(start_y + thermal_h, actual_display_h)
-        end_x = min(start_x + thermal_w, actual_display_w)
+        # Calculate the actual overlap region between thermal and display
+        # Handle negative offsets by calculating crop regions
+        thermal_crop_y = 0  # Crop from top of thermal if it extends above display
+        thermal_crop_x = 0  # Crop from left of thermal if it extends left of display
+        thermal_crop_bottom = 0  # Crop from bottom of thermal if it extends below display
+        thermal_crop_right = 0  # Crop from right of thermal if it extends right of display
         
-        # Adjust thermal size if bounds are smaller
+        # Adjust if thermal extends above/left of display (negative start)
+        if desired_start_y < 0:
+            thermal_crop_y = -desired_start_y
+            start_y = 0
+        else:
+            start_y = desired_start_y
+            
+        if desired_start_x < 0:
+            thermal_crop_x = -desired_start_x
+            start_x = 0
+        else:
+            start_x = desired_start_x
+        
+        # Calculate end positions (clamp to display bounds)
+        # Account for thermal crop when calculating available thermal size
+        available_thermal_h = thermal_h - thermal_crop_y
+        available_thermal_w = thermal_w - thermal_crop_x
+        end_y = min(start_y + available_thermal_h, actual_display_h)
+        end_x = min(start_x + available_thermal_w, actual_display_w)
+        
+        # Adjust thermal crop if it extends beyond bottom/right of display
+        thermal_crop_bottom = max(0, (start_y + available_thermal_h) - actual_display_h)
+        thermal_crop_right = max(0, (start_x + available_thermal_w) - actual_display_w)
+        
+        # Calculate actual visible region size
         actual_h = end_y - start_y
         actual_w = end_x - start_x
         
         if actual_h <= 0 or actual_w <= 0:
             return None
         
-        # Extract visible region matching thermal size
+        # Extract visible region matching the overlap area
         try:
             visible_region = webcam_processed[start_y:end_y, start_x:end_x].copy()
         except Exception as e:
             return None
         
-        # Resize thermal to match visible region if dimensions differ
+        # Crop and resize thermal to match visible region
+        # Handle negative offsets by cropping thermal image appropriately
         # Thermal is now RGBA (4 channels) with transparency
         if len(thermal_white_hot.shape) == 2:
             # Grayscale thermal - shouldn't happen, but handle it
-            if thermal_white_hot.shape[0] != actual_h or thermal_white_hot.shape[1] != actual_w:
-                thermal_resized = cv2.resize(thermal_white_hot, (actual_w, actual_h), interpolation=cv2.INTER_LINEAR)
+            # Crop thermal if needed (for negative offsets)
+            thermal_cropped = thermal_white_hot[thermal_crop_y:thermal_white_hot.shape[0]-thermal_crop_bottom,
+                                                 thermal_crop_x:thermal_white_hot.shape[1]-thermal_crop_right]
+            if thermal_cropped.shape[0] != actual_h or thermal_cropped.shape[1] != actual_w:
+                thermal_resized = cv2.resize(thermal_cropped, (actual_w, actual_h), interpolation=cv2.INTER_LINEAR)
             else:
-                thermal_resized = thermal_white_hot
+                thermal_resized = thermal_cropped
             # Convert grayscale to 3-channel RGB (no alpha for backward compatibility)
             thermal_resized = np.stack([thermal_resized] * 3, axis=2)
         elif len(thermal_white_hot.shape) == 3:
             if thermal_white_hot.shape[2] == 4:
-                # RGBA image - resize preserving alpha channel
-                if thermal_white_hot.shape[0] != actual_h or thermal_white_hot.shape[1] != actual_w:
+                # RGBA image - crop and resize preserving alpha channel
+                # Crop thermal if needed (for negative offsets)
+                thermal_cropped = thermal_white_hot[thermal_crop_y:thermal_white_hot.shape[0]-thermal_crop_bottom,
+                                                     thermal_crop_x:thermal_white_hot.shape[1]-thermal_crop_right, :]
+                if thermal_cropped.shape[0] != actual_h or thermal_cropped.shape[1] != actual_w:
                     # Resize RGB and alpha separately, then combine
-                    thermal_rgb = thermal_white_hot[:, :, :3]
-                    thermal_alpha = thermal_white_hot[:, :, 3]
+                    thermal_rgb = thermal_cropped[:, :, :3]
+                    thermal_alpha = thermal_cropped[:, :, 3]
                     thermal_rgb_resized = cv2.resize(thermal_rgb, (actual_w, actual_h), interpolation=cv2.INTER_LINEAR)
                     thermal_alpha_resized = cv2.resize(thermal_alpha, (actual_w, actual_h), interpolation=cv2.INTER_LINEAR)
                     thermal_resized = np.dstack([thermal_rgb_resized, thermal_alpha_resized])
                 else:
-                    thermal_resized = thermal_white_hot
+                    thermal_resized = thermal_cropped
             else:
-                # RGB image (3 channels) - no alpha, resize normally
-                if thermal_white_hot.shape[0] != actual_h or thermal_white_hot.shape[1] != actual_w:
-                    thermal_resized = cv2.resize(thermal_white_hot, (actual_w, actual_h), interpolation=cv2.INTER_LINEAR)
+                # RGB image (3 channels) - no alpha, crop and resize normally
+                thermal_cropped = thermal_white_hot[thermal_crop_y:thermal_white_hot.shape[0]-thermal_crop_bottom,
+                                                     thermal_crop_x:thermal_white_hot.shape[1]-thermal_crop_right]
+                if thermal_cropped.shape[0] != actual_h or thermal_cropped.shape[1] != actual_w:
+                    thermal_resized = cv2.resize(thermal_cropped, (actual_w, actual_h), interpolation=cv2.INTER_LINEAR)
                 else:
-                    thermal_resized = thermal_white_hot
+                    thermal_resized = thermal_cropped
         else:
             return None
         
