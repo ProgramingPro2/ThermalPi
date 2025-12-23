@@ -584,16 +584,32 @@ def fuse_thermal_hud(thermal_frame, webcam_frame):
         # Create center region for fusion
         center_y = config.DISPLAY_HEIGHT // 2
         center_x = config.DISPLAY_WIDTH // 2
-        thermal_h = config.THERMAL_HEIGHT
-        thermal_w = config.THERMAL_WIDTH
+        
+        # Use actual thermal image dimensions (may differ from config after processing)
+        if len(thermal_white_hot.shape) >= 2:
+            thermal_h = thermal_white_hot.shape[0]
+            thermal_w = thermal_white_hot.shape[1]
+        else:
+            thermal_h = config.THERMAL_HEIGHT
+            thermal_w = config.THERMAL_WIDTH
         
         # Apply offsets for parallax correction (can be negative)
+        # Negative Y offset moves thermal UP (toward top of screen, smaller Y value)
+        # Negative X offset moves thermal LEFT (toward left of screen, smaller X value)
         offset_x = config.THERMAL_OFFSET_X
         offset_y = config.THERMAL_OFFSET_Y
         
         # Calculate desired thermal position (may be negative or extend beyond display)
+        # For Y: smaller value = higher on screen (top is Y=0)
+        # Offset is applied directly: negative offset = move up/left
+        # Center position without offset: center_y - thermal_h // 2
+        # With negative offset: moves UP (decreases Y value)
         desired_start_y = center_y - thermal_h // 2 + offset_y
         desired_start_x = center_x - thermal_w // 2 + offset_x
+        
+        # Debug output (uncomment to troubleshoot offset issues)
+        # if offset_y != 0 or offset_x != 0:
+        #     print(f"DEBUG Offset: X={offset_x}, Y={offset_y}, Thermal: {thermal_w}x{thermal_h}, Center: ({center_x}, {center_y}), Desired: ({desired_start_x}, {desired_start_y})")
         
         # Get display dimensions
         actual_display_h = webcam_processed.shape[0]
@@ -704,6 +720,12 @@ def fuse_thermal_hud(thermal_frame, webcam_frame):
             # Ensure blended_region matches the region size
             if blended_region.shape[0] != actual_h or blended_region.shape[1] != actual_w:
                 blended_region = cv2.resize(blended_region, (actual_w, actual_h), interpolation=cv2.INTER_LINEAR)
+            
+            # Debug output (uncomment to troubleshoot offset issues)
+            # if offset_y != 0 or offset_x != 0:
+            #     print(f"DEBUG Placing at: start_y={start_y}, end_y={end_y}, start_x={start_x}, end_x={end_x}, size={actual_h}x{actual_w}, crop_y={thermal_crop_y}")
+            
+            # Place the blended region at the calculated position (with offset applied)
             composite[start_y:end_y, start_x:end_x] = blended_region
         except Exception as e:
             return None
