@@ -80,7 +80,6 @@ class DisplayController:
                 
                 # Resize if needed
                 if frame_rgb.shape[:2] != (config.DISPLAY_HEIGHT, config.DISPLAY_WIDTH):
-                    from PIL import Image
                     pil_img = Image.fromarray(frame_rgb)
                     pil_img = pil_img.resize(
                         (config.DISPLAY_WIDTH, config.DISPLAY_HEIGHT),
