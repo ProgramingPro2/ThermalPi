@@ -95,7 +95,7 @@ class ThermalFusionHUD:
         """Initialize all hardware devices"""
         print("Initializing devices...")
         
-        # Initialize webcam
+        # Initialize webcam (optional)
         try:
             self.webcam_cap = cv2.VideoCapture(config.WEBCAM_DEVICE_ID)
             if not self.webcam_cap.isOpened():
@@ -113,7 +113,8 @@ class ThermalFusionHUD:
             
         except Exception as e:
             print(f"Error initializing webcam: {e}")
-            return False
+            print("Continuing without webcam (thermal-only mode)")
+            self.webcam_cap = None
         
         # Initialize thermal camera
         try:
@@ -143,10 +144,19 @@ class ThermalFusionHUD:
             print(f"Error initializing display: {e}")
             return False
         
+        # Ensure at least thermal camera is initialized
+        if self.thermal_camera is None:
+            print("Error: Thermal camera initialization failed and is required")
+            return False
+        
         return True
     
     def webcam_capture_loop(self):
         """Webcam capture thread (60fps target)"""
+        if self.webcam_cap is None:
+            print("Webcam capture thread skipped (no webcam available)")
+            return
+        
         print("Webcam capture thread started")
         frame_time_target = 1.0 / config.WEBCAM_FPS
         
@@ -302,17 +312,21 @@ class ThermalFusionHUD:
         self.running = True
         
         # Start capture threads
-        self.webcam_thread = threading.Thread(
-            target=self.webcam_capture_loop,
-            daemon=True
-        )
         self.thermal_thread = threading.Thread(
             target=self.thermal_capture_loop,
             daemon=True
         )
-        
-        self.webcam_thread.start()
         self.thermal_thread.start()
+        
+        # Only start webcam thread if webcam is available
+        if self.webcam_cap is not None:
+            self.webcam_thread = threading.Thread(
+                target=self.webcam_capture_loop,
+                daemon=True
+            )
+            self.webcam_thread.start()
+        else:
+            self.webcam_thread = None
         
         # Give threads time to start capturing
         time.sleep(0.5)
@@ -394,6 +408,37 @@ class ThermalFusionHUD:
                             self.display_frame_count += 1
                     except Exception as e:
                         print(f"Error processing webcam frame: {e}")
+            elif last_thermal_frame is not None:
+                # Thermal-only mode (webcam not available)
+                try:
+                    from image_processor import normalize_thermal, apply_clahe, apply_white_hot_colormap
+                    import numpy as np
+                    import cv2
+                    
+                    # Clip thermal data to valid range
+                    thermal_frame = np.clip(last_thermal_frame, 0, 16383).astype(np.uint16)
+                    
+                    # Process thermal: normalize -> CLAHE -> white-hot
+                    thermal_norm = normalize_thermal(thermal_frame)
+                    if thermal_norm is not None:
+                        thermal_clahe = apply_clahe(thermal_norm)
+                        if thermal_clahe is not None:
+                            thermal_display = apply_white_hot_colormap(thermal_clahe)
+                            if thermal_display is not None:
+                                # Resize to display size
+                                if thermal_display.shape[:2] != (config.DISPLAY_HEIGHT, config.DISPLAY_WIDTH):
+                                    thermal_display = cv2.resize(
+                                        thermal_display,
+                                        (config.DISPLAY_WIDTH, config.DISPLAY_HEIGHT),
+                                        interpolation=cv2.INTER_LINEAR
+                                    )
+                                # Convert to RGB if grayscale
+                                if len(thermal_display.shape) == 2:
+                                    thermal_display = np.stack([thermal_display] * 3, axis=2)
+                                self.display.update_frame(thermal_display)
+                                self.display_frame_count += 1
+                except Exception as e:
+                    print(f"Error processing thermal-only frame: {e}")
             
             # Update statistics
             self.update_statistics()

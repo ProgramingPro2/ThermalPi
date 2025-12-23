@@ -4,8 +4,8 @@ Adjust parameters here for parallax correction and image processing.
 """
 
 # Thermal layer offset for parallax correction (pixels)
-THERMAL_OFFSET_X = 0
-THERMAL_OFFSET_Y = 0
+THERMAL_OFFSET_X = 5
+THERMAL_OFFSET_Y = -15
 
 # Display settings
 DISPLAY_WIDTH = 320
