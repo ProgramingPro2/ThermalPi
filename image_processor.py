@@ -594,17 +594,19 @@ def fuse_thermal_hud(thermal_frame, webcam_frame):
             thermal_w = config.THERMAL_WIDTH
         
         # Apply offsets for parallax correction (can be negative)
-        # Negative Y offset moves thermal UP (toward top of screen, smaller Y value)
+        # Negative Y offset moves thermal DOWN (toward bottom of screen, larger Y value)
         # Negative X offset moves thermal LEFT (toward left of screen, smaller X value)
+        # Positive Y offset moves thermal UP (toward top of screen, smaller Y value)
+        # Positive X offset moves thermal RIGHT (toward right of screen, larger X value)
         offset_x = config.THERMAL_OFFSET_X
         offset_y = config.THERMAL_OFFSET_Y
         
         # Calculate desired thermal position (may be negative or extend beyond display)
-        # For Y: smaller value = higher on screen (top is Y=0)
-        # Offset is applied directly: negative offset = move up/left
+        # For Y: larger value = lower on screen (bottom is larger Y)
+        # Offset interpretation: negative Y = move DOWN (increase Y), positive Y = move UP (decrease Y)
         # Center position without offset: center_y - thermal_h // 2
-        # With negative offset: moves UP (decreases Y value)
-        desired_start_y = center_y - thermal_h // 2 + offset_y
+        # To move DOWN with negative offset, we subtract the offset (double negative = positive)
+        desired_start_y = center_y - thermal_h // 2 - offset_y
         desired_start_x = center_x - thermal_w // 2 + offset_x
         
         # Debug output (uncomment to troubleshoot offset issues)
