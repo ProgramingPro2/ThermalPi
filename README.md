@@ -294,6 +294,8 @@ Note: The startup script (`run_hud.sh`) automatically handles virtual environmen
 
 ## License
 
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
+
 This project is for personal/educational use. Respect licenses of dependencies and hardware SDKs.
 
 ## Contributing
